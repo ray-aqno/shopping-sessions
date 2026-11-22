@@ -167,6 +167,7 @@ def mutate(data):
     campaign = next(records(data / "campaigns.csv", 2))[0]
     with (data / "links" / "mutations.csv").open("w", newline="") as f:
         f.write('user_id_a,user_id_b\n" zz ",zz\nzz,aa_unused\nzz,é\n')
+        f.write(f"u{'x'*90},u{'y'*90}\n")
     with (data / "events" / "mutations.csv").open("w", newline="") as f:
         f.write("event_id,user_id,ts,ingest_ts,event_type,product_id,price_cents\n")
         for i, (ts, price, ingest) in enumerate([
@@ -182,11 +183,15 @@ def mutate(data):
         f.write(f"mutation_bad,zz,bad,{start},view,{product},\n")
         later = (EPOCH + timedelta(milliseconds=ms + 1000)).isoformat().replace("+00:00", "Z")
         f.write(f"mutation_bad,zz,{start},{later},purchase,{product},99999\n")
+        f.write(f"mutation_long_a,u{'x'*90},{start},{start},purchase,{product},251\n")
+        f.write(f"mutation_long_b,u{'y'*90},{start},{start},view,{product},\n")
+        f.write(f"mutation_long_solo,u{'z'*90},{start},{start},purchase,{product},252\n")
     with (data / "clicks" / "mutations.csv").open("w", newline="") as f:
         f.write("click_id,user_id,campaign_id,ts\n")
         f.write(f"tie_é,é,{campaign},{ms}\n")
         f.write(f"tie_A,zz,{campaign},{ms}\n")
         f.write(f'"tie_A","zz","{campaign}","{ms}"\n')
+        f.write(f"mutation_long_click,u{'y'*90},{campaign},{ms}\n")
 
 
 def main():

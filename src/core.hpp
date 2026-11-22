@@ -44,12 +44,14 @@ inline size_t integer_hash(uint64_t key) {
     return key^(key>>31);
 }
 
-template<class T,class Allocator> void radix_sort64(std::vector<T,Allocator>& rows) {
+template<class Sequence> void radix_sort64(Sequence& rows) {
+    using T=typename Sequence::value_type;
+    if (rows.size()<2) return;
     if (rows.size()<256 || rows.size()>UINT32_MAX) {
         std::stable_sort(rows.begin(),rows.end(),[](const T& a,const T& b) { return a.key<b.key; });
         return;
     }
-    std::vector<T,Allocator> scratch(rows.size());
+    Sequence scratch(rows.size());
     std::array<uint32_t,65536> positions;
     uint64_t any=0,all=UINT64_MAX;
     for (const auto& row:rows) { any|=row.key; all&=row.key; }
@@ -79,7 +81,15 @@ struct Hash {
             s.remove_prefix(8);
         }
         uint64_t tail = 0;
-        std::memcpy(&tail, s.data(), s.size());
+        if (s.size()>=4) {
+            uint32_t first,last;
+            std::memcpy(&first,s.data(),4); std::memcpy(&last,s.data()+s.size()-4,4);
+            tail=first | (uint64_t(last)<<32);
+        } else if (s.size()>=2) {
+            uint16_t first,last;
+            std::memcpy(&first,s.data(),2); std::memcpy(&last,s.data()+s.size()-2,2);
+            tail=first | (uint64_t(last)<<16);
+        } else if (!s.empty()) tail=static_cast<unsigned char>(s[0]);
         return mix(h ^ tail, 0x8ebc6af09c88c6e3ULL);
     }
 };

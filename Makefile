@@ -16,8 +16,9 @@ fixtures: build
 	$(PYTHON) scripts/run_fixtures.py tests/fixtures -- $(BINARY)
 
 parser-check: build
-	cmake --build build --target csv-check -j8
+	cmake --build build --target csv-check csv-scan-check -j8
 	build/csv-check
+	build/csv-scan-check
 
 fixtures-container: image
 	IMAGE=$(IMAGE) $(PYTHON) scripts/run_fixtures.py tests/fixtures -- scripts/docker_run.sh

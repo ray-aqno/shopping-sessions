@@ -1,4 +1,5 @@
 #include "core.hpp"
+#include "trivial_buffer.hpp"
 #include <iostream>
 #include <random>
 #include <stdexcept>
@@ -22,6 +23,12 @@ int main() {
         std::stable_sort(expected.begin(),expected.end(),[](const Row& a,const Row& b) { return a.key<b.key; });
         radix_sort64(actual);
         if (expected!=actual) throw std::runtime_error("radix sort disagreement");
+        TrivialBuffer<Row> buffer;
+        for (size_t i=0;i<expected.size();i+=113) buffer.append(expected.data()+i,std::min(size_t(113),expected.size()-i));
+        radix_sort64(buffer);
+        if (buffer.size()!=expected.size() || !std::equal(buffer.begin(),buffer.end(),expected.begin())) throw std::runtime_error("buffer growth disagreement");
+        TrivialBuffer<Row> moved=std::move(buffer);
+        if (!buffer.empty() || moved.size()!=expected.size()) throw std::runtime_error("buffer move disagreement");
     }
     for (SV bad : {SV(""),SV(" u1"),SV("u1 "),SV("é"),SV("12345678901")})
         if (packed_id(bad)) throw std::runtime_error("unsupported ID entered packed path");

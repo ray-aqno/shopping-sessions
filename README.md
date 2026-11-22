@@ -6,10 +6,14 @@ does not launch Python, a SQL engine, a JVM, or a subprocess.
 
 ## Optimization update
 
-The submission target is **under 1.4 seconds** on the hidden practice dataset.
-The **scorer-v5 baseline is ready for a first submission**: the linux/amd64 Docker
-image builds and passes all 36 official fixtures and the current public dev answer.
-There is no official hidden-data score yet.
+The current target is **under 0.54 seconds** on hidden practice data. The submitted
+commit `ebf3e54485e65fa3107d35124f2a853f9c8389a1` scored **3.2711 seconds**.
+On this workstation, fresh v5 practice containers took 1.885 seconds median for
+that submitted build and 1.437 seconds for the current optimization candidate.
+These local timings are not predictions of the official score. The candidate
+parallelizes all linked IDs, fuses CSV line scanning, and reduces identity-cache
+and allocation costs. Both tables match the submitted implementation exactly on
+the current 20M-event seed-17 dataset.
 
 Before the organizers refreshed the generator and dev answer for v5, this build
 took **1.39 seconds median** locally on the old 20M-event / 5M-click dataset.

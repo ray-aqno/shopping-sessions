@@ -1,0 +1,57 @@
+{
+  "image": "shopping-sessions:v5-cache",
+  "image_id": "sha256:ffeb3d5071aeb075104f37d1f529e0c0463aa0f8997a549642202f5ac03c5e93",
+  "data": "practice17-v5",
+  "cpuset": "0-7",
+  "ncpu": 8,
+  "memory_gb": 24,
+  "runs": [
+    {
+      "round": 1,
+      "container_seconds": 1.437241,
+      "cli_seconds": 1.5086928770006125,
+      "exit_code": 0,
+      "oom_killed": false,
+      "phases": [
+        "dimensions + links: 0.137897s",
+        "CSV + validation + event partition: 0.765451s",
+        "dedup + compact events: 0.936942s",
+        "clicks: 1.11733s",
+        "sessions + attribution + assists: 1.25628s",
+        "Parquet complete: 1.3242s"
+      ]
+    },
+    {
+      "round": 2,
+      "container_seconds": 1.410623,
+      "cli_seconds": 1.5012389729999995,
+      "exit_code": 0,
+      "oom_killed": false,
+      "phases": [
+        "dimensions + links: 0.146744s",
+        "CSV + validation + event partition: 0.768644s",
+        "dedup + compact events: 0.94169s",
+        "clicks: 1.11817s",
+        "sessions + attribution + assists: 1.25402s",
+        "Parquet complete: 1.32252s"
+      ]
+    },
+    {
+      "round": 3,
+      "container_seconds": 1.463046,
+      "cli_seconds": 1.5468206120003742,
+      "exit_code": 0,
+      "oom_killed": false,
+      "phases": [
+        "dimensions + links: 0.155319s",
+        "CSV + validation + event partition: 0.78992s",
+        "dedup + compact events: 0.956347s",
+        "clicks: 1.13166s",
+        "sessions + attribution + assists: 1.27584s",
+        "Parquet complete: 1.35322s"
+      ]
+    }
+  ],
+  "note": "Local Docker State.StartedAt-to-FinishedAt; not an official scorer measurement",
+  "median_seconds": 1.437241
+}
