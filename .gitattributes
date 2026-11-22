@@ -1,0 +1,3 @@
+# The CSV fixtures deliberately contain CR bytes and malformed records.
+tests/fixtures/** -text
+rules.md -text

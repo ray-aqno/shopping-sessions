@@ -1,0 +1,8 @@
+.venv/
+build/
+data/
+output/
+scratch/
+__pycache__/
+*.zip
+tools/generator/target/
