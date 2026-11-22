@@ -442,9 +442,10 @@ void build_links(const std::vector<SV>& files,People& people) {
     #pragma omp parallel for schedule(static)
     for (size_t i=0;i<directory.named.size();++i) if (directory.named[i].hash) directory.named[i].value=people.parent[dense(directory.named[i].value)];
 }
-unsigned person_bucket(uint32_t p) {
-    return integer_hash(p)&(PARTS-1);
-}
+// Person IDs are dense (linked roots count up from 0; standalone IDs are
+// 0x80000000 | i*T+t), so the low bits spread people evenly and p/PARTS is a
+// unique slot for each person inside a bucket.
+unsigned person_bucket(uint32_t p) { return p&(PARTS-1); }
 void read_events(const std::vector<SV>& files, Buckets<Raw>& raw, People& people, const Dimensions& dim, int64_t begin, int64_t end) {
     auto work = chunks(files);
     const size_t rows_estimate=input_bytes(files)/80;
@@ -512,29 +513,31 @@ void dedup_validate(Buckets<Raw>& raw, Buckets<CompactEvent>& events) {
     {
         Local<CompactEvent> local;
         presize(local,rows_estimate);
-        TrivialBuffer<Raw> rows;
-        struct Slot { uint32_t fingerprint=0,index=NONE; };
+        // Rows stay in the producers' segments: the table points at them, and the
+        // segments are never freed mid-run (each munmap stalls every thread).
+        struct Slot { uint32_t fingerprint=0; Raw* row=nullptr; };
         std::vector<Slot> table;
         #pragma omp for schedule(dynamic) nowait
         for (unsigned j=0; j<PARTS; ++j) {
-            raw[j].gather(rows);
-            if (rows.size() >= UINT32_MAX) throw std::runtime_error("dedup partition exceeds index range");
-            size_t capacity = 16; while (capacity < rows.size()*10/7+1) capacity *= 2;
+            size_t size=0; for (const auto& part:raw[j].parts) size+=part.size();
+            size_t capacity = 16; while (capacity < size*10/7+1) capacity *= 2;
             const size_t mask=capacity-1;
             table.assign(capacity,Slot{});
-            constexpr uint32_t AHEAD=16;
-            for (uint32_t i=0;i<rows.size();++i) {
-                if (i+AHEAD<rows.size()) __builtin_prefetch(&table[rows[i+AHEAD].fingerprint & mask],1,3);
-                auto& row=rows[i];
-                size_t slot=row.fingerprint & mask;
-                while (table[slot].index!=NONE && (table[slot].fingerprint!=row.fingerprint || !rows[table[slot].index].same_id(row))) slot=(slot+1)&mask;
-                auto& entry=table[slot];
-                if (entry.index==NONE) { entry={row.fingerprint,i}; continue; }
-                auto& kept=rows[entry.index];
-                if (row.ingest<kept.ingest) { kept.person=NONE; entry.index=i; }
-                else row.person=NONE;
+            constexpr size_t AHEAD=16;
+            for (auto& part:raw[j].parts) {
+                Raw* rows=part.data(); const size_t n=part.size();
+                for (size_t i=0;i<n;++i) {
+                    if (i+AHEAD<n) __builtin_prefetch(&table[rows[i+AHEAD].fingerprint & mask],1,3);
+                    auto& row=rows[i];
+                    size_t slot=row.fingerprint & mask;
+                    while (table[slot].row && (table[slot].fingerprint!=row.fingerprint || !table[slot].row->same_id(row))) slot=(slot+1)&mask;
+                    auto& entry=table[slot];
+                    if (!entry.row) { entry={row.fingerprint,&row}; continue; }
+                    if (row.ingest<entry.row->ingest) { entry.row->person=NONE; entry.row=&row; }
+                    else row.person=NONE;
+                }
             }
-            for (const auto& row:rows) if (row.person!=NONE)
+            for (const auto& part:raw[j].parts) for (const auto& row:part) if (row.person!=NONE)
                 local[person_bucket(row.person)].push_back({(uint64_t(row.person)<<32)|row.ts,row.price,row.category});
         }
         flush(local, events);
@@ -613,7 +616,53 @@ struct CampaignAccumulator {
 };
 struct Results { std::vector<UserRow> users; CampaignAccumulator campaigns; };
 
-void aggregate(Buckets<CompactEvent>& events, Buckets<Click>& clicks, const Dimensions& dim, std::vector<Results>& results,int64_t base) {
+// Sorts one bucket's rows by (person slot, time) with LSD radix passes and
+// leaves start[s]..start[s+1] as slot s's rows. A bucket fits in L2, so passes
+// are cheap when their counters fit in L1: time goes in three 11-bit digits,
+// then one stable pass by slot. Every histogram comes from a single read of the
+// producers' segments, and the first pass scatters straight from them.
+template<class T,class Slot> void sort_by_person_time(Bucket<T>& bucket,TrivialBuffer<T>& out,TrivialBuffer<T>& scratch,std::vector<uint32_t>& start,Slot&& slot) {
+    constexpr unsigned BITS=11, DIGIT=1u<<BITS;
+    std::array<std::array<uint32_t,DIGIT>,3> count{};
+    std::fill(start.begin(),start.end(),0);
+    size_t size=0; uint32_t any=0, all=UINT32_MAX;
+    for (const auto& part:bucket.parts) {
+        size+=part.size();
+        for (const auto& row:part) {
+            uint32_t t=uint32_t(row.key);
+            ++count[0][t&(DIGIT-1)]; ++count[1][(t>>BITS)&(DIGIT-1)]; ++count[2][t>>(2*BITS)];
+            ++start[slot(row)+1]; any|=t; all&=t;
+        }
+    }
+    if (size>UINT32_MAX) throw std::runtime_error("bucket too large");
+    out.clear(); out.resize(size); scratch.clear(); scratch.resize(size);
+    // Rows are read from the segments by the first pass that runs.
+    bool from_parts=true;
+    T* src=nullptr; T* dst=out.data();
+    auto scatter=[&](auto&& digit,uint32_t* position) {
+        if (from_parts) { for (const auto& part:bucket.parts) for (const auto& row:part) dst[position[digit(row)]++]=row; from_parts=false; }
+        else for (size_t i=0;i<size;++i) dst[position[digit(src[i])]++]=src[i];
+        src=dst; dst=(dst==out.data()) ? scratch.data() : out.data();
+    };
+    for (unsigned pass=0;pass<3;++pass) {
+        unsigned shift=pass*BITS;
+        uint32_t mask=(pass==2 ? 0x3ffu : DIGIT-1);
+        if (!(((any^all)>>shift)&mask)) continue;
+        uint32_t offset=0; for (auto& c:count[pass]) { uint32_t n=c; c=offset; offset+=n; }
+        scatter([shift,mask](const T& row) { return (uint32_t(row.key)>>shift)&mask; },count[pass].data());
+    }
+    for (size_t i=1;i<start.size();++i) start[i]+=start[i-1];
+    std::vector<uint32_t> position(start.begin(),start.end()-1);
+    scatter(slot,position.data());
+    if (src!=out.data()) out.swap(scratch);
+    // The segments are left for exit to release; freeing them here stalls every
+    // thread on the address-space lock.
+}
+void aggregate(Buckets<CompactEvent>& events, Buckets<Click>& clicks, const People& people, const Dimensions& dim, std::vector<Results>& results,int64_t base) {
+    const uint32_t linked_slots=uint32_t(people.names.size()/PARTS+1);
+    size_t loose_max=0; for (const auto& list:people.loose) loose_max=std::max(loose_max,list.names.size());
+    const size_t slots=linked_slots+(loose_max*people.loose.size())/PARTS+1;
+    auto slot_of=[linked_slots](uint32_t p) { return (p&0x80000000U) ? linked_slots+((p&0x7fffffffU)/PARTS) : p/PARTS; };
     #pragma omp parallel
     {
         auto& result=results[omp_get_thread_num()];
@@ -622,26 +671,25 @@ void aggregate(Buckets<CompactEvent>& events, Buckets<Click>& clicks, const Dime
           result.users.reserve(rows/9/size_t(omp_get_num_threads())*3/2+64); }
         std::vector<uint32_t> counts(dim.campaigns.size(),0), active, positions(dim.campaigns.size());
         std::vector<int64_t> categories(dim.categories.size(),0);
-        TrivialBuffer<CompactEvent> ev, scratch; TrivialBuffer<Click> cl, click_scratch;
+        TrivialBuffer<CompactEvent> ev, ev_scratch; TrivialBuffer<Click> cl, cl_scratch;
+        std::vector<uint32_t> estart(slots+1), cstart(slots+1);
         const int64_t click_base=base-WEEK;
         #pragma omp for schedule(dynamic)
         for (unsigned bucket=0; bucket<PARTS; ++bucket) {
-            events[bucket].gather(ev); clicks[bucket].gather(cl);
-            radix_sort64(ev,scratch);
-            // By person and time; at one timestamp the last added click must be the
-            // smallest ID, so runs of equal keys go to descending ID order.
-            radix_sort64(cl,click_scratch);
-            for (size_t a=0;a<cl.size();) {
-                size_t b=a+1; while (b<cl.size() && cl[b].key==cl[a].key) ++b;
-                if (b-a>1) std::sort(cl.begin()+a,cl.begin()+b,[](const Click& x,const Click& y) { return x.id>y.id; });
-                a=b;
-            }
-            size_t ep=0, cp=0;
-            while (ep<ev.size()) {
+            sort_by_person_time(events[bucket],ev,ev_scratch,estart,[&](const CompactEvent& e) { return slot_of(event_person(e)); });
+            sort_by_person_time(clicks[bucket],cl,cl_scratch,cstart,[&](const Click& c) { return slot_of(c.person()); });
+            for (size_t slot=0; slot<slots; ++slot) {
+                size_t ep=estart[slot], ee=estart[slot+1];
+                if (ep==ee) continue;
+                size_t cp=cstart[slot], ce=cstart[slot+1];
                 uint32_t person=event_person(ev[ep]);
-                size_t ee=ep+1; while (ee<ev.size() && event_person(ev[ee])==person) ++ee;
-                while (cp<cl.size() && cl[cp].person()<person) ++cp;
-                size_t ce=cp; while (ce<cl.size() && cl[ce].person()==person) ++ce;
+                // At one timestamp the last added click must be the smallest ID, so
+                // runs of equal times go to descending ID order.
+                for (size_t a=cp;a+1<ce;) {
+                    size_t b=a+1; while (b<ce && cl[b].key==cl[a].key) ++b;
+                    if (b-a>1) std::sort(cl.begin()+a,cl.begin()+b,[](const Click& x,const Click& y) { return x.id>y.id; });
+                    a=b;
+                }
                 size_t left=cp, right=cp;
                 UserRow user{person,day_of(event_time(ev[ep],base))};
                 auto emit_user = [&] {
@@ -682,7 +730,7 @@ void aggregate(Buckets<CompactEvent>& events, Buckets<Click>& clicks, const Dime
                 }
                 emit_user();
                 for (uint32_t c : active) counts[c]=0;
-                active.clear(); cp=ce;
+                active.clear();
             }
         }
     }
@@ -708,10 +756,20 @@ void write_users(const fs::path& file,const std::vector<UserRow>& rows,const Peo
     arrow::Date32Builder day;
     arrow::Int64Builder sessions, events, revenue;
     for (auto* b : std::vector<arrow::ArrayBuilder*>{&user,&category,&day,&sessions,&events,&revenue}) check(b->Reserve(int64_t(rows.size())));
-    for (const auto& row : rows) {
-        check(user.Append(people.name(row.person))); check(day.Append(row.day));
-        check(sessions.Append(row.sessions)); check(events.Append(row.events)); check(revenue.Append(row.revenue));
-        if (row.category==NONE) check(category.AppendNull()); else check(category.Append(dim.categories[row.category]));
+    // Exact string sizes first, so each builder allocates its bytes once and the
+    // appends below need no capacity checks.
+    std::vector<SV> names(rows.size());
+    int64_t name_bytes=0, category_bytes=0;
+    for (size_t i=0;i<rows.size();++i) {
+        names[i]=people.name(rows[i].person); name_bytes+=int64_t(names[i].size());
+        if (rows[i].category!=NONE) category_bytes+=int64_t(dim.categories[rows[i].category].size());
+    }
+    check(user.ReserveData(name_bytes)); check(category.ReserveData(category_bytes));
+    for (size_t i=0;i<rows.size();++i) {
+        const auto& row=rows[i];
+        user.UnsafeAppend(names[i]); day.UnsafeAppend(row.day);
+        sessions.UnsafeAppend(row.sessions); events.UnsafeAppend(row.events); revenue.UnsafeAppend(row.revenue);
+        if (row.category==NONE) category.UnsafeAppendNull(); else category.UnsafeAppend(dim.categories[row.category]);
     }
     auto schema=arrow::schema({arrow::field("user_id",arrow::utf8(),false),arrow::field("day",arrow::date32(),false),arrow::field("sessions",arrow::int64(),false),arrow::field("events",arrow::int64(),false),arrow::field("revenue_cents",arrow::int64(),false),arrow::field("top_category",arrow::utf8(),true)});
     parquet_write(file,arrow::Table::Make(schema,{finish(user),finish(day),finish(sessions),finish(events),finish(revenue),finish(category)}));
@@ -771,9 +829,10 @@ int main() {
         std::vector<Results> results(ncpu);
         for (auto& result:results) result.campaigns.configure(day_of(begin),day_of(end-1),dim.campaigns.size(),ncpu);
         auto events=std::make_unique<Buckets<CompactEvent>>();
-        dedup_validate(*raw,*events); raw.reset(); timing("dedup + compact events");
+        // raw is released at exit, not here: freeing it costs more than it saves.
+        dedup_validate(*raw,*events); timing("dedup + compact events");
         read_clicks(clickfiles,*clicks,people,dim,begin,end); timing("clicks");
-        aggregate(*events,*clicks,dim,results,begin); timing("sessions + attribution + assists");
+        aggregate(*events,*clicks,people,dim,results,begin); timing("sessions + attribution + assists");
         fs::create_directories(output/"user_daily"); fs::create_directories(output/"campaign_daily");
         // Clear only visible Parquet outputs from an earlier run.
         for (const char* folder : {"user_daily","campaign_daily"}) for (auto& e : fs::directory_iterator(output/folder))

@@ -1,5 +1,6 @@
 #pragma once
 #include "core.hpp"
+#include <cstring>
 
 namespace shop {
 template<size_t N,class F> void scan_csv_scalar(SV content,F& consume) {
@@ -14,61 +15,69 @@ template<size_t N,class F> void scan_csv_scalar(SV content,F& consume) {
 }
 
 #if defined(__x86_64__)
+// One pass over 64-byte blocks: each block's commas, newlines and quotes become
+// bitmasks, and the separators are visited in order. Every byte is loaded once;
+// a row's quote count is a difference of running popcounts. The last partial
+// block is copied into a zeroed buffer, so nothing past the content is read.
 template<size_t N,class F> __attribute__((target("avx2,popcnt")))
 void scan_csv_avx2(SV content,F& consume) {
     if (content.empty()) return;
-    const char* position=content.data();
-    const char* limit=position+content.size();
+    const char* const base=content.data();
+    const size_t size=content.size();
     const __m256i commas=_mm256_set1_epi8(','),quotes=_mm256_set1_epi8('"'),newlines=_mm256_set1_epi8('\n');
-    while (position<limit) {
-        const char* start=position;
-        const char* cursor=position;
-        const char* row_end=nullptr;
-        std::array<const char*,N> ends{};
-        size_t count=0,quote_count=0;
-        bool valid=true;
-        while (limit-cursor>=32) {
-            __m256i bytes=_mm256_loadu_si256(reinterpret_cast<const __m256i*>(cursor));
-            uint32_t nl=uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,newlines)));
-            uint32_t mask=nl ? (uint32_t(1)<<unsigned(__builtin_ctz(nl)))-1 : UINT32_MAX;
-            uint32_t separators=uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,commas)))&mask;
-            quote_count+=unsigned(__builtin_popcount(unsigned(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,quotes)))&mask));
-            while (separators) {
-                if (count<N-1) ends[count++]=cursor+unsigned(__builtin_ctz(separators));
-                else valid=false;
-                separators&=separators-1;
-            }
-            if (nl) {
-                row_end=cursor+unsigned(__builtin_ctz(nl)); position=row_end+1; break;
-            }
-            cursor+=32;
-        }
-        if (!row_end) {
-            while (cursor<limit && *cursor!='\n') {
-                if (*cursor==',') {
-                    if (count<N-1) ends[count++]=cursor;
-                    else valid=false;
+    const char* start=base;
+    std::array<const char*,N> ends{};
+    size_t count=0; bool overflow=false;
+    uint64_t quote_total=0, quote_start=0;
+    auto finish=[&](const char* row_end,uint64_t quote_end) {
+        if (!overflow && count==N-1) {
+            ends[N-1]=row_end;
+            std::array<SV,N> fields;
+            size_t expected_quotes=0; bool valid=true;
+            const char* field=start;
+            for (size_t i=0;i<N;++i) {
+                size_t length=size_t(ends[i]-field);
+                const char* value=field;
+                if (length && *value=='"') {
+                    if (length<2 || ends[i][-1]!='"') { valid=false; break; }
+                    ++value; length-=2; expected_quotes+=2;
                 }
-                quote_count+=*cursor=='"'; ++cursor;
+                fields[i]=SV(value,length);
+                if (i+1<N) field=ends[i]+1;
             }
-            row_end=cursor; position=cursor<limit ? cursor+1 : limit;
+            if (valid && quote_end-quote_start==expected_quotes) consume(fields);
         }
-        if (!valid || count!=N-1) continue;
-        ends[N-1]=row_end;
-        std::array<SV,N> fields;
-        size_t expected_quotes=0;
-        for (size_t i=0;i<N;++i) {
-            size_t length=size_t(ends[i]-start);
-            const char* value=start;
-            if (length && *value=='"') {
-                if (length<2 || ends[i][-1]!='"') { valid=false; break; }
-                ++value; length-=2; expected_quotes+=2;
-            }
-            fields[i]=SV(value,length);
-            if (i+1<N) start=ends[i]+1;
+        start=row_end+1; count=0; overflow=false;
+    };
+    for (size_t offset=0;offset<size;offset+=64) {
+        const char* block=base+offset;
+        __m256i lo,hi;
+        if (size-offset>=64) {
+            lo=_mm256_loadu_si256(reinterpret_cast<const __m256i*>(block));
+            hi=_mm256_loadu_si256(reinterpret_cast<const __m256i*>(block+32));
+        } else {
+            alignas(32) char tail[64]={};
+            std::memcpy(tail,block,size-offset);
+            lo=_mm256_load_si256(reinterpret_cast<const __m256i*>(tail));
+            hi=_mm256_load_si256(reinterpret_cast<const __m256i*>(tail+32));
         }
-        if (valid && quote_count==expected_quotes) consume(fields);
+#define SHOP_MASK(c) (uint64_t(uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(lo,c)))) | (uint64_t(uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(hi,c))))<<32))
+        const uint64_t nl=SHOP_MASK(newlines), q=SHOP_MASK(quotes);
+        uint64_t separators=nl|SHOP_MASK(commas);
+#undef SHOP_MASK
+        while (separators) {
+            const unsigned bit=unsigned(__builtin_ctzll(separators));
+            if ((nl>>bit)&1) {
+                const uint64_t before=quote_total+uint64_t(__builtin_popcountll(q&((uint64_t(1)<<bit)-1)));
+                finish(block+bit,before);
+                quote_start=before;   // A newline is not a quote.
+            } else if (count<N-1) ends[count++]=block+bit;
+            else overflow=true;
+            separators&=separators-1;
+        }
+        quote_total+=uint64_t(__builtin_popcountll(q));
     }
+    if (start<base+size) finish(base+size,quote_total);
 }
 #endif
 
