@@ -98,9 +98,9 @@ pub struct Dataset {
     pub seed: u64,
     pub window_start: i64,
     pub rates: Rates,
-    pub user_key: u64,
-    pub event_key: u64,
-    pub click_key: u64,
+    pub user_key: [u64; 4],
+    pub event_key: [u64; 4],
+    pub click_key: [u64; 4],
     pub users: Vec<UserPlan>,
     pub shards: Vec<std::ops::Range<usize>>,
     /// Products by popularity rank, and the rank's cumulative weight.
@@ -140,9 +140,17 @@ impl Dataset {
             quoted_field: 0.2,
             malformed: 0.000_5,
         };
-        let user_key = random.next_u64();
-        let event_key = random.next_u64();
-        let click_key = random.next_u64();
+        let mut next_key = || {
+            [
+                random.next_u64(),
+                random.next_u64(),
+                random.next_u64(),
+                random.next_u64(),
+            ]
+        };
+        let user_key = next_key();
+        let event_key = next_key();
+        let click_key = next_key();
 
         let user_count = (events / EVENTS_PER_USER).max(WHALE_USERS as u64 * 4) as usize;
         let whale_event_shares: Vec<f64> =

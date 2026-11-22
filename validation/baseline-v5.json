@@ -1,0 +1,37 @@
+{
+  "scorer_version": "shopping-sessions-5",
+  "validation_date_utc": "2026-11-22",
+  "algorithm_source_commit": "a42324796093907e4ea3fc3bb4d99232734ea064",
+  "image_id": "sha256:9ed575317ea6462a26e639f454af639d782988fcd1a9dc121e6b4e7e9e713801",
+  "image_size_bytes": 195121926,
+  "platform": "linux/amd64",
+  "user": "1000:1000",
+  "official_fixtures_passed": 36,
+  "official_fixtures_total": 36,
+  "dev_seed": 1,
+  "generator_arguments": {
+    "events": 1000000,
+    "clicks": 250000
+  },
+  "dev_exact_comparison": "MATCH; zero missing, extra, differing rows or duplicate keys",
+  "dev_output_rows": {
+    "user_daily": 118107,
+    "campaign_daily": 27449
+  },
+  "published_answer_sha256": {
+    "user_daily": "d9acf6e17693704f1e4d8f54f877b863f4cf964e846369e3cd76b468bd97a071",
+    "campaign_daily": "f7ef2df64bfd53416e875e4f95d0c442629cff5f0b599d7049f190538ceecd22"
+  },
+  "rules_sha256": "90e1132a605d762423ba5958bec44bfddbc3506f94b3ba1068a28b7a427f4248",
+  "runtime_flags": {
+    "cpus": 8,
+    "memory": "24g",
+    "memory_swap": "24g",
+    "network": "none",
+    "read_only_root": true,
+    "tmpfs_tmp": "64m",
+    "pids_limit": 4096
+  },
+  "official_submission_status": "pending; user will submit manually",
+  "v5_hidden_score": null
+}

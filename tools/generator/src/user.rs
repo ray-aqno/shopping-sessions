@@ -6,7 +6,7 @@ use crate::plan::{
 };
 use crate::random::{Random, Stream};
 use crate::text::{
-    DAY, HOUR, MINUTE, SECOND, bad_timestamp, base36, scramble, valid_timestamp, write_utc,
+    DAY, HOUR, MINUTE, SECOND, bad_timestamp, scramble, valid_timestamp, write_id_suffix, write_utc,
 };
 
 /// Room for each person's alias numbers in the 40 bits `scramble` mixes.
@@ -117,10 +117,10 @@ struct User<'a> {
     row: Row,
 }
 
-/// The ID for a number: `u` and base 36, scrambled so no ID says whose it is.
+/// The ID for a number: `u` and a keyed mixed-width suffix so no ID says whose it is.
 fn user_id(dataset: &Dataset, number: u64) -> Vec<u8> {
     let mut id = b"u".to_vec();
-    base36(&mut id, scramble(number, dataset.user_key));
+    write_id_suffix(&mut id, number, &dataset.user_key);
     id
 }
 
@@ -310,7 +310,7 @@ impl<'a> User<'a> {
 
         row.field(|out| {
             out.push(b'e');
-            base36(out, scramble(index, dataset.event_key));
+            write_id_suffix(out, index, &dataset.event_key);
         });
         if random.chance(rates.case_variant) {
             row.uppercase_last();
@@ -403,7 +403,7 @@ impl<'a> User<'a> {
         // Only revise a row whose earliest copy survived CSV corruption, so the
         // correct tables stay the same for every seed. Use a separate keyed draw
         // to keep the old generator's random stream and file choices intact.
-        if original_present && copies > 0 && scramble(index, dataset.click_key) % 64 == 0 {
+        if original_present && copies > 0 && scramble(index, &dataset.click_key) % 64 == 0 {
             let other = (self.index + 1) % dataset.users.len();
             row.replace(1, |out| {
                 out.extend_from_slice(&user_id(dataset, other as u64 * ALIAS_SLOTS));
@@ -459,7 +459,7 @@ impl<'a> User<'a> {
         row.clear();
         row.field(|out| {
             out.push(b'k');
-            base36(out, scramble(index, dataset.click_key));
+            write_id_suffix(out, index, &dataset.click_key);
         });
         if random.chance(rates.case_variant) {
             row.uppercase_last();

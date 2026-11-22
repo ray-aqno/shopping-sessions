@@ -7,14 +7,21 @@ does not launch Python, a SQL engine, a JVM, or a subprocess.
 ## Optimization update
 
 The submission target is **under 1.4 seconds** on the hidden practice dataset.
-The current build takes **1.39 seconds median** locally on 20M events / 5M clicks.
+The **scorer-v5 baseline is ready for a first submission**: the linux/amd64 Docker
+image builds and passes all 36 official fixtures and the current public dev answer.
+There is no official hidden-data score yet.
+
+Before the organizers refreshed the generator and dev answer for v5, this build
+took **1.39 seconds median** locally on the old 20M-event / 5M-click dataset.
 Three runs took 1.42, 1.31, and 1.39 seconds, versus 1.60 seconds median for the
 preceding parallel-graph build in the same alternating comparison. Peak RSS was
 2.89 GiB. These are native start-to-exit measurements on eight pinned CPUs, not
 official scorer results; the margin against 1.4 seconds is small. See the
 [raw phase timings and memory measurements](benchmarks/compact-events-20m.json).
-Docker verification and a current-build 60M benchmark are pending. The 39.40-second
-result below is for the original build.
+These older timings are **not measurements on the current scorer-v5 input**.
+The v5 generator adds variable-width opaque IDs; these use the existing exact
+string fallback. The 39.40-second result below is for the original build and old
+generator.
 
 The changes are one CSV parse per event, tombstones for invalid dedup candidates,
 a bounded exact-key cache for identity resolution, and a CPU-dispatched AVX2 CSV
@@ -26,13 +33,17 @@ an invalid earliest copy still suppresses a later valid copy. Vector parsing
 passed 450,000 scalar/vector comparisons under AddressSanitizer and UBSan.
 The optimized pipeline passes all 36 fixtures and eight independent randomized
 comparisons with and without Unicode/whitespace mutations, plus a long-window
-fallback check. Its full practice output matches the original exactly: 2,249,563
+fallback check. On the old generator its full practice output matches the original exactly: 2,249,563
 user rows and 28,014 campaign rows, with no differences or duplicate keys.
 
 ## Verified results
 
-All 36 official fixtures pass. The official seed-1 dev answer matches exactly:
-117,038 user rows and 27,400 campaign rows, with no differences or duplicate keys.
+All 36 official fixtures pass **inside the submission image**. The current
+scorer-v5 seed-1 dev answer also matches exactly inside that image:
+118,107 user rows and 27,449 campaign rows, with no differences or duplicate keys.
+The image is linux/amd64, 195,121,926 bytes, and runs as uid/gid 1000. Checks use
+the official runner's read-only root, no network, 8 CPUs, 24 GB RAM/no additional
+swap, 64 MB `/tmp`, and process limit. See [validation evidence](validation/baseline-v5.json).
 An independent Python oracle also matches eight generated datasets with extra
 malformed records, Unicode IDs/digits, carriage returns, long epoch values,
 duplicate IDs, and invalid earliest event copies.
@@ -53,8 +64,8 @@ and CPU scheduling differ from the scorer. A streaming output check overlapped
 part of the final-scale measurement. Both practice runs and the final run reported
 zero swaps in `/usr/bin/time`.
 
-Docker Desktop was unavailable during the initial measurements. Container
-verification is being performed separately from these historical native timings.
+Docker Desktop was unavailable during the initial measurements; the current
+container has since been built and verified as described above.
 The 60M test validates runtime and cross-table invariants; no published exact
 answer exists for that seed and size.
 The final-scale output also passes streaming accounting checks: 6,663,688 user
@@ -172,6 +183,8 @@ session, rather than the number of qualifying clicks.
 
 ## Submission
 
-Publish this repository and submit a commit hash after building and testing the
-container. The repository contains no generated dataset. A public repository and
-an official submission have not been created by these local validation steps.
+The public repository is https://github.com/ray-aqno/shopping-sessions.
+Submit that URL and the full commit hash from `git rev-parse HEAD` on the
+[Shopping Sessions track](https://www.joinbuilders.org/buildathon/tracks/shopping-sessions).
+The root Dockerfile is the submission entry point. The repository contains no
+generated dataset. An official submission and hidden-data score are still pending.

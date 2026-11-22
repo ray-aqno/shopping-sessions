@@ -205,15 +205,47 @@ pub fn base36(out: &mut Vec<u8>, value: u64) {
     out.extend_from_slice(&buffer[at..]);
 }
 
-/// A bijection on `0..2^40`, so IDs look random and never collide. Multiplying
-/// by an odd number and xor-shifting right are each invertible modulo 2^40, so
-/// any odd multipliers would do; these two are fixed so IDs never change.
-pub fn scramble(value: u64, key: u64) -> u64 {
-    const MASK: u64 = (1 << 40) - 1;
-    let mut mixed = value & MASK;
-    mixed = (mixed.wrapping_mul(0x9E37_79B9_7F4B) ^ key) & MASK;
-    mixed ^= mixed >> 17;
-    mixed.wrapping_mul(0xD6E8_FEB8_6659) & MASK
+/// 6-round balanced Feistel bijection on `0..2^40` (two 20-bit halves) keyed by
+/// 256 bits derived from the dataset seed. Every round is invertible given the
+/// secret key, so IDs never collide, while remaining infeasible to invert from
+/// the emitted IDs alone.
+pub fn scramble(value: u64, key: &[u64; 4]) -> u64 {
+    const HALF_MASK: u64 = (1 << 20) - 1;
+    let mut left = (value >> 20) & HALF_MASK;
+    let mut right = value & HALF_MASK;
+    for round in 0..6u64 {
+        let round_key = key[(round as usize) & 3]
+            .wrapping_add(round.wrapping_mul(0x9E37_79B9_7F4A_7C15));
+        let mut mixed = (right ^ round_key).wrapping_add(0x9E37_79B9_7F4A_7C15);
+        mixed = (mixed ^ (mixed >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        mixed = (mixed ^ (mixed >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        mixed ^= mixed >> 31;
+        let next_left = right;
+        let next_right = (left ^ mixed) & HALF_MASK;
+        left = next_left;
+        right = next_right;
+    }
+    (left << 20) | right
+}
+
+/// Writes an identifier suffix from the keyed bijection: 1 in 8 distinct IDs
+/// gets a 32-digit lowercase hex suffix and the rest get lowercase base 36
+/// (1 to 8 characters). Because the two widths never overlap and both halves of
+/// a long ID apply a bijection to `scrambled`, distinct inputs never collide.
+pub fn write_id_suffix(out: &mut Vec<u8>, value: u64, key: &[u64; 4]) {
+    let scrambled = scramble(value, key);
+    if (scrambled & 7) == 0 {
+        let mix64 = |mut z: u64| -> u64 {
+            z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+            z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+            z ^ (z >> 31)
+        };
+        let high = mix64(scrambled ^ key[0] ^ 0x236B_C018_7B12_9111);
+        let low = mix64(scrambled ^ key[1] ^ 0x5594_E178_7A20_2222);
+        write!(out, "{high:016x}{low:016x}").unwrap();
+    } else {
+        base36(out, scrambled);
+    }
 }
 
 #[cfg(test)]
@@ -253,5 +285,37 @@ mod tests {
         ] {
             assert!(found, "no {form} among the bad timestamps");
         }
+    }
+
+    #[test]
+    fn keyed_feistel_scramble_and_mixed_id_suffixes_are_collision_free() {
+        let key = [
+            0x1234_5678_9ABC_DEF0,
+            0xFEDC_BA98_7654_3210,
+            0x0F1E_2D3C_4B5A_6978,
+            0x89AB_CDEF_0123_4567,
+        ];
+        let mut seen_scrambled = std::collections::HashSet::with_capacity(65_536);
+        let mut seen_suffixes = std::collections::HashSet::with_capacity(65_536);
+        let mut long_count = 0usize;
+        for value in 0..65_536u64 {
+            let s = scramble(value, &key);
+            assert!(s < (1u64 << 40), "scramble out of 40-bit range: {s}");
+            assert!(seen_scrambled.insert(s), "scramble collision at {value}");
+            let mut out = Vec::new();
+            write_id_suffix(&mut out, value, &key);
+            if out.len() == 32 {
+                long_count += 1;
+                assert!(out.iter().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()));
+            } else {
+                assert!((1..=8).contains(&out.len()));
+            }
+            assert!(seen_suffixes.insert(out), "suffix collision at {value}");
+        }
+        // ~1/8 of 65,536 = ~8,192 long IDs.
+        assert!(
+            (7_500..=8_900).contains(&long_count),
+            "unexpected long ID share: {long_count} / 65536"
+        );
     }
 }
