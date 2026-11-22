@@ -1,0 +1,50 @@
+{
+  "data": "practice17",
+  "cpus": "0-7",
+  "ncpu": 8,
+  "rounds": 1,
+  "runs": [
+    {
+      "binary": "shopping-vector",
+      "round": 1,
+      "wall_seconds": 17.05,
+      "peak_rss_kib": 3338768,
+      "user_seconds": 37.09,
+      "system_seconds": 3.5,
+      "phases": [
+        "dimensions + links: 1.23231s",
+        "CSV + validation + event partition: 11.3181s",
+        "dedup + compact events: 13.622s",
+        "clicks: 15.43s",
+        "sessions + attribution + assists: 16.3901s",
+        "Parquet complete: 16.655s"
+      ]
+    },
+    {
+      "binary": "shopping",
+      "round": 1,
+      "wall_seconds": 6.14,
+      "peak_rss_kib": 3348676,
+      "user_seconds": 15.71,
+      "system_seconds": 1.41,
+      "phases": [
+        "dimensions + links: 0.657755s",
+        "CSV + validation + event partition: 3.65971s",
+        "dedup + compact events: 4.03969s",
+        "clicks: 4.87567s",
+        "sessions + attribution + assists: 5.69167s",
+        "Parquet complete: 5.91559s"
+      ]
+    }
+  ],
+  "summary": {
+    "shopping-vector": {
+      "median_seconds": 17.05,
+      "max_peak_rss_kib": 3338768
+    },
+    "shopping": {
+      "median_seconds": 6.14,
+      "max_peak_rss_kib": 3348676
+    }
+  }
+}

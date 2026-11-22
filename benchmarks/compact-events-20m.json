@@ -1,0 +1,114 @@
+{
+  "data": "practice17",
+  "cpus": "0-7",
+  "ncpu": 8,
+  "rounds": 3,
+  "runs": [
+    {
+      "binary": "shopping-parallel",
+      "round": 1,
+      "wall_seconds": 1.64,
+      "peak_rss_kib": 3105032,
+      "user_seconds": 10.01,
+      "system_seconds": 1.25,
+      "phases": [
+        "dimensions + links: 0.111594s",
+        "CSV + validation + event partition: 0.898379s",
+        "dedup + compact events: 1.02461s",
+        "clicks: 1.19144s",
+        "sessions + attribution + assists: 1.47097s",
+        "Parquet complete: 1.56181s"
+      ]
+    },
+    {
+      "binary": "shopping",
+      "round": 1,
+      "wall_seconds": 1.42,
+      "peak_rss_kib": 2979208,
+      "user_seconds": 8.59,
+      "system_seconds": 1.02,
+      "phases": [
+        "dimensions + links: 0.115272s",
+        "CSV + validation + event partition: 0.853899s",
+        "dedup + compact events: 0.941125s",
+        "clicks: 1.09082s",
+        "sessions + attribution + assists: 1.25651s",
+        "Parquet complete: 1.3375s"
+      ]
+    },
+    {
+      "binary": "shopping",
+      "round": 2,
+      "wall_seconds": 1.31,
+      "peak_rss_kib": 2994428,
+      "user_seconds": 8.36,
+      "system_seconds": 0.76,
+      "phases": [
+        "dimensions + links: 0.112235s",
+        "CSV + validation + event partition: 0.793351s",
+        "dedup + compact events: 0.877205s",
+        "clicks: 1.00773s",
+        "sessions + attribution + assists: 1.16335s",
+        "Parquet complete: 1.23722s"
+      ]
+    },
+    {
+      "binary": "shopping-parallel",
+      "round": 2,
+      "wall_seconds": 1.5,
+      "peak_rss_kib": 3131280,
+      "user_seconds": 9.4,
+      "system_seconds": 0.91,
+      "phases": [
+        "dimensions + links: 0.10545s",
+        "CSV + validation + event partition: 0.813575s",
+        "dedup + compact events: 0.937987s",
+        "clicks: 1.08883s",
+        "sessions + attribution + assists: 1.34376s",
+        "Parquet complete: 1.41838s"
+      ]
+    },
+    {
+      "binary": "shopping-parallel",
+      "round": 3,
+      "wall_seconds": 1.6,
+      "peak_rss_kib": 3103328,
+      "user_seconds": 10.12,
+      "system_seconds": 0.92,
+      "phases": [
+        "dimensions + links: 0.106953s",
+        "CSV + validation + event partition: 0.872883s",
+        "dedup + compact events: 1.00031s",
+        "clicks: 1.14783s",
+        "sessions + attribution + assists: 1.43539s",
+        "Parquet complete: 1.52078s"
+      ]
+    },
+    {
+      "binary": "shopping",
+      "round": 3,
+      "wall_seconds": 1.39,
+      "peak_rss_kib": 3023720,
+      "user_seconds": 8.89,
+      "system_seconds": 0.8,
+      "phases": [
+        "dimensions + links: 0.104003s",
+        "CSV + validation + event partition: 0.816622s",
+        "dedup + compact events: 0.9397s",
+        "clicks: 1.08335s",
+        "sessions + attribution + assists: 1.23867s",
+        "Parquet complete: 1.31174s"
+      ]
+    }
+  ],
+  "summary": {
+    "shopping-parallel": {
+      "median_seconds": 1.6,
+      "max_peak_rss_kib": 3131280
+    },
+    "shopping": {
+      "median_seconds": 1.39,
+      "max_peak_rss_kib": 3023720
+    }
+  }
+}

@@ -6,23 +6,27 @@ does not launch Python, a SQL engine, a JVM, or a subprocess.
 
 ## Optimization update
 
-The current build takes **4.05 seconds median** on 20M events / 5M clicks, versus
-**5.87 seconds** for the original `632db3b` build in the same alternating, warm-cache
-comparison: a 31% wall-time reduction. Three optimized runs took 3.85, 4.05, and
-7.07 seconds; three baseline runs took 5.47, 5.97, and 5.87 seconds. These are local
-native measurements on eight pinned CPUs, with other workstation activity and
-substantial scheduling variance. They are not official scorer results. See the
-[raw phase timings and memory measurements](benchmarks/optimization-20m-warm.json).
-Current peak RSS in this comparison was 3.22 GiB. The optimized 60M runtime has
-not been measured; the 39.40-second result below is for the original build.
+The submission target is **under 1.4 seconds** on the hidden practice dataset.
+The current build takes **1.39 seconds median** locally on 20M events / 5M clicks.
+Three runs took 1.42, 1.31, and 1.39 seconds, versus 1.60 seconds median for the
+preceding parallel-graph build in the same alternating comparison. Peak RSS was
+2.89 GiB. These are native start-to-exit measurements on eight pinned CPUs, not
+official scorer results; the margin against 1.4 seconds is small. See the
+[raw phase timings and memory measurements](benchmarks/compact-events-20m.json).
+Docker verification and a current-build 60M benchmark are pending. The 39.40-second
+result below is for the original build.
 
 The changes are one CSV parse per event, tombstones for invalid dedup candidates,
 a bounded exact-key cache for identity resolution, and a CPU-dispatched AVX2 CSV
-parser with a scalar fallback. Dedup still considers invalid well-formed copies:
+parser with a scalar fallback, collision-free packed IDs with exact string
+fallbacks, parallel identity-graph construction, and 16-byte events sorted by
+radix. Windows longer than the compact timestamp representation supports use
+full-width timestamps and comparison sorting. Dedup still considers invalid well-formed copies:
 an invalid earliest copy still suppresses a later valid copy. Vector parsing
 passed 450,000 scalar/vector comparisons under AddressSanitizer and UBSan.
 The optimized pipeline passes all 36 fixtures and eight independent randomized
-comparisons. Its full practice output matches the original exactly: 2,249,563
+comparisons with and without Unicode/whitespace mutations, plus a long-window
+fallback check. Its full practice output matches the original exactly: 2,249,563
 user rows and 28,014 campaign rows, with no differences or duplicate keys.
 
 ## Verified results
@@ -49,8 +53,8 @@ and CPU scheduling differ from the scorer. A streaming output check overlapped
 part of the final-scale measurement. Both practice runs and the final run reported
 zero swaps in `/usr/bin/time`.
 
-**This does not meet a 0.26-second practice target.** Docker Desktop was unavailable
-during development, so the Dockerfile has not yet been built or executed locally.
+Docker Desktop was unavailable during the initial measurements. Container
+verification is being performed separately from these historical native timings.
 The 60M test validates runtime and cross-table invariants; no published exact
 answer exists for that seed and size.
 The final-scale output also passes streaming accounting checks: 6,663,688 user
@@ -118,8 +122,11 @@ Use the exact dev comparator and independent oracle for correctness.
 ## Design
 
 1. **Map files and resolve identity links first.** Strict CSV parsing keeps spaces
-   and carriage returns. Union by size with path compression resolves arbitrarily
-   long chains and shared-device components. A separate component minimum names
+   and carriage returns. Eligible short IDs are encoded losslessly into integers;
+   all other values retain exact-string handling. For packed IDs, parallel hash
+   partitions intern nodes, then atomic unions hook larger roots below smaller
+   roots. Parent IDs strictly decrease, preventing cycles. General linked strings
+   use union by size with path compression. A separate component minimum names
    each person, including IDs that appear only in links. The finalized identity
    dictionary is immutable during event processing. A bounded per-thread cache
    accelerates repeated IDs with exact comparisons. Unlinked IDs use striped
@@ -137,7 +144,9 @@ Use the exact dev comparator and independent oracle for correctness.
    timestamp, including tombstones. A tombstone winner emits no event. Hash
    collisions never establish equality. Malformed rows cannot suppress valid
    copies; invalid well-formed winners can. Compact numeric events are partitioned
-   by person, and raw dedup partitions are freed as they finish. There is no second
+   by person. Windows of at most 2^32 milliseconds use a 64-bit person/time key and
+   16-byte event records, sorted with stable radix passes; longer windows retain
+   full timestamps. Raw dedup partitions are freed as they finish. There is no second
    CSV parse and no scattered semantic-validation pass over the mapped CSVs.
 4. **Parse and partition clicks.** Identical click duplicates are retained because
    their multiplicity is semantically invisible to both attribution and set-valued

@@ -193,13 +193,21 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--seeds", nargs="+", type=int, default=[2, 3, 4, 5, 29, 128, 2028, 9999])
     parser.add_argument("--events", type=int, default=20000)
+    parser.add_argument("--no-mutations", action="store_true")
+    parser.add_argument("--window-days", type=int)
     args = parser.parse_args()
     generator = ROOT / "tools/generator/target/release/generate"
     for seed in args.seeds:
         with tempfile.TemporaryDirectory() as tmp:
             data, out = Path(tmp) / "data", Path(tmp) / "output"
             subprocess.run([str(generator), "--seed", str(seed), "--events", str(args.events), "--clicks", str(args.events // 4), "--threads", "2", "--output", str(data)], check=True)
-            mutate(data)
+            if args.window_days is not None:
+                manifest = json.loads((data / "manifest.json").read_text())
+                end = EPOCH + timedelta(milliseconds=timestamp(manifest["window_start"]), days=args.window_days)
+                manifest["window_end"] = end.isoformat().replace("+00:00", "Z")
+                (data / "manifest.json").write_text(json.dumps(manifest))
+            if not args.no_mutations:
+                mutate(data)
             expected = reference(data)
             subprocess.run([str(ROOT / "build/shopping")], env=dict(os.environ, DATA_DIR=str(data), OUTPUT_DIR=str(out), NCPU="8"), check=True, capture_output=True)
             for table, rows in expected.items():
