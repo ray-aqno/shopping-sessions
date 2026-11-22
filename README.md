@@ -4,6 +4,27 @@ A C++20 implementation of the exact [Shopping Sessions rules](rules.md).
 OpenMP supplies CPU parallelism; Apache Arrow C++ writes Parquet. The runtime
 does not launch Python, a SQL engine, a JVM, or a subprocess.
 
+## Optimization update
+
+The current build takes **4.05 seconds median** on 20M events / 5M clicks, versus
+**5.87 seconds** for the original `632db3b` build in the same alternating, warm-cache
+comparison: a 31% wall-time reduction. Three optimized runs took 3.85, 4.05, and
+7.07 seconds; three baseline runs took 5.47, 5.97, and 5.87 seconds. These are local
+native measurements on eight pinned CPUs, with other workstation activity and
+substantial scheduling variance. They are not official scorer results. See the
+[raw phase timings and memory measurements](benchmarks/optimization-20m-warm.json).
+Current peak RSS in this comparison was 3.22 GiB. The optimized 60M runtime has
+not been measured; the 39.40-second result below is for the original build.
+
+The changes are one CSV parse per event, tombstones for invalid dedup candidates,
+a bounded exact-key cache for identity resolution, and a CPU-dispatched AVX2 CSV
+parser with a scalar fallback. Dedup still considers invalid well-formed copies:
+an invalid earliest copy still suppresses a later valid copy. Vector parsing
+passed 450,000 scalar/vector comparisons under AddressSanitizer and UBSan.
+The optimized pipeline passes all 36 fixtures and eight independent randomized
+comparisons. Its full practice output matches the original exactly: 2,249,563
+user rows and 28,014 campaign rows, with no differences or duplicate keys.
+
 ## Verified results
 
 All 36 official fixtures pass. The official seed-1 dev answer matches exactly:
@@ -12,7 +33,7 @@ An independent Python oracle also matches eight generated datasets with extra
 malformed records, Unicode IDs/digits, carriage returns, long epoch values,
 duplicate IDs, and invalid earliest event copies.
 
-Local start-to-exit timings, including shared-library startup and process teardown:
+Original-build start-to-exit timings, including shared-library startup and process teardown:
 
 | Input | Seed | Wall time | Peak RSS |
 | --- | --- | ---: | ---: |
@@ -46,6 +67,7 @@ Python versions; the wheel supplies native headers and shared libraries.
 uv venv --python 3.13 .venv
 uv pip install --python .venv/bin/python -r requirements-dev.txt
 make fixtures
+make parser-check
 make differential
 make dev
 make run-dev
@@ -99,18 +121,24 @@ Use the exact dev comparator and independent oracle for correctness.
    and carriage returns. Union by size with path compression resolves arbitrarily
    long chains and shared-device components. A separate component minimum names
    each person, including IDs that appear only in links. The finalized identity
-   dictionary is immutable during event processing. Unlinked IDs use striped
-   interning and per-thread caches, giving every person a compact numeric key.
-2. **Partition event copies by a full-string hash.** Every structurally valid row
-   with a nonempty event ID is retained before semantic validation. Each of 256
-   partitions independently deduplicates with exact string comparisons and keeps
-   the earliest ingest timestamp. Hash collisions never establish equality.
-   Malformed rows cannot suppress valid copies; invalid well-formed winners can.
-3. **Validate winners and compact events.** Calendar and offset validation are
-   explicit. Epoch milliseconds and prices accept only ASCII digits and use
-   checked integer arithmetic, including leading zeros. Winners become compact
-   numeric records partitioned by person. Raw dedup partitions are freed as they
-   finish. Only purchase events need category lookups.
+   dictionary is immutable during event processing. A bounded per-thread cache
+   accelerates repeated IDs with exact comparisons. Unlinked IDs use striped
+   interning, giving every person a compact numeric key.
+2. **Parse once and partition event copies by a full-string hash.** The parser
+   checks separators and quotes in 32-byte blocks where AVX2 and POPCNT are
+   available, with a scalar fallback. Every structurally valid row with a nonempty
+   event ID is retained. Semantic validation is computed during this sequential
+   pass and invalid copies become tombstones, rather than being discarded.
+   Calendar and offset checks are explicit. Epoch milliseconds and prices accept
+   only ASCII digits and use checked integer arithmetic, including leading zeros.
+   Only purchase events need category lookups.
+3. **Dedup all copies and compact surviving winners.** Each of 256 partitions
+   deduplicates with exact string comparisons and keeps the earliest ingest
+   timestamp, including tombstones. A tombstone winner emits no event. Hash
+   collisions never establish equality. Malformed rows cannot suppress valid
+   copies; invalid well-formed winners can. Compact numeric events are partitioned
+   by person, and raw dedup partitions are freed as they finish. There is no second
+   CSV parse and no scattered semantic-validation pass over the mapped CSVs.
 4. **Parse and partition clicks.** Identical click duplicates are retained because
    their multiplicity is semantically invisible to both attribution and set-valued
    assists. This relies on the rules' guarantee that duplicate click IDs have

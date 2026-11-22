@@ -93,14 +93,15 @@ struct IdMap {
     struct Entry { SV key; uint32_t value = 0; };
     std::vector<Entry> slots = std::vector<Entry>(1024);
     size_t size = 0;
-    uint32_t find(SV key) const {
-        size_t i = Hash{}(key) & (slots.size()-1);
+    uint32_t find(SV key, size_t hash) const {
+        size_t i = hash & (slots.size()-1);
         while (slots[i].key.data()) {
             if (slots[i].key == key) return slots[i].value;
             i = (i+1) & (slots.size()-1);
         }
         return NONE;
     }
+    uint32_t find(SV key) const { return find(key, Hash{}(key)); }
     void insert(SV key, uint32_t value) {
         if ((size+1)*10 > slots.size()*7) {
             auto old = std::move(slots); slots.resize(old.size()*2); size = 0;
@@ -110,6 +111,10 @@ struct IdMap {
         while (slots[i].key.data()) i = (i+1) & (slots.size()-1);
         slots[i] = {key, value}; ++size;
     }
+};
+struct ResolveCache {
+    struct Entry { SV key; uint32_t value=0; };
+    std::vector<Entry> entries = std::vector<Entry>(32768);
 };
 struct People {
     IdMap linked;
@@ -137,11 +142,13 @@ struct People {
     void seal() {
         for (auto& e : linked.slots) if (e.key.data()) e.value = root(e.value);
     }
-    uint32_t resolve(SV s, Dict<uint32_t>& cache) {
-        uint32_t id = linked.find(s);
-        if (id != NONE) return id;
-        auto c = cache.find(s); if (c != cache.end()) return c->second;
-        unsigned shard = Hash{}(s) & (PARTS-1);
+    uint32_t resolve(SV s, ResolveCache& cache) {
+        size_t hash=Hash{}(s);
+        auto& cached=cache.entries[hash & (cache.entries.size()-1)];
+        if (cached.key==s) return cached.value;
+        uint32_t id = linked.find(s,hash);
+        if (id != NONE) { cached={s,id}; return id; }
+        unsigned shard = hash & (PARTS-1);
         auto& stripe = standalone[shard];
         std::lock_guard lock(stripe.mutex);
         auto it = stripe.ids.find(s);
@@ -151,7 +158,7 @@ struct People {
             id = 0x80000000U | (uint32_t(stripe.names.size()) * PARTS + shard);
             stripe.names.push_back(s); stripe.ids.emplace(s, id);
         }
-        cache.emplace(s, id); return id;
+        cached={s,id}; return id;
     }
     SV name(uint32_t id) const {
         if (!(id & 0x80000000U)) return names[id];
@@ -177,13 +184,13 @@ struct Dimensions {
         });
     }
 };
-struct Raw { SV line; int64_t ingest; };
-SV event_id(SV line) {
-    SV id = line.substr(0, line.find(','));
-    if (!id.empty() && id.front() == '"') { id.remove_prefix(1); id.remove_suffix(1); }
-    return id;
-}
 struct Event { int64_t ts; uint32_t person, price, category; };
+struct Raw {
+    const char* id;
+    int64_t ingest, ts;
+    uint32_t id_size, person, price, category;
+    SV key() const { return {id,id_size}; }
+};
 struct Click { int64_t ts; SV id; uint32_t person, campaign; };
 template<class T> struct Bucket { std::mutex mutex; std::vector<T> rows; };
 template<class T> using Buckets = std::array<Bucket<T>, PARTS>;
@@ -198,11 +205,12 @@ unsigned person_bucket(uint32_t p) {
     // Mix numeric roots, including the packed standalone IDs, before partitioning.
     p ^= p >> 16; p *= 0x7feb352dU; p ^= p >> 15; p *= 0x846ca68bU; return (p ^ (p >> 16)) & (PARTS-1);
 }
-void read_events(const std::vector<SV>& files, Buckets<Raw>& raw) {
+void read_events(const std::vector<SV>& files, Buckets<Raw>& raw, People& people, const Dimensions& dim, int64_t begin, int64_t end) {
     auto work = chunks(files);
     #pragma omp parallel
     {
         std::array<std::vector<Raw>,PARTS> local;
+        ResolveCache cache;
         #pragma omp for schedule(dynamic)
         for (size_t j=0; j<work.size(); ++j) {
             lines(work[j], [&](SV line) {
@@ -210,16 +218,28 @@ void read_events(const std::vector<SV>& files, Buckets<Raw>& raw) {
                 if (!csv(line,f) || f[0].empty()) return;
                 int64_t ingest;
                 if (!timestamp(f[3], ingest)) throw std::runtime_error("invalid guaranteed ingest_ts");
-                local[Hash{}(f[0]) & (PARTS-1)].push_back({line,ingest});
+                if (f[0].size()>UINT32_MAX) throw std::runtime_error("event ID exceeds index range");
+                Raw row{f[0].data(),ingest,0,uint32_t(f[0].size()),NONE,0,0};
+                // A semantically invalid copy remains a dedup candidate.
+                // Its NONE person is a tombstone, never a discarded early row.
+                int64_t ts; uint64_t price=0;
+                bool valid=!f[1].empty() && !f[5].empty() && timestamp(f[2],ts) && ts>=begin && ts<end;
+                valid=valid && (f[4]=="view" || f[4]=="cart" || f[4]=="purchase");
+                if (valid && f[4]=="purchase") valid=digits(f[6],10000000,price) && price;
+                if (valid && ingest<=ts+DAY) {
+                    row.ts=ts; row.price=uint32_t(price);
+                    if (price) { auto p=dim.product.find(f[5]); if (p!=dim.product.end()) row.category=p->second; }
+                    row.person=people.resolve(f[1],cache);
+                }
+                local[Hash{}(f[0]) & (PARTS-1)].push_back(row);
             }, false);
             flush(local,raw);
         }
     }
 }
-void dedup_validate(Buckets<Raw>& raw, Buckets<Event>& events, People& people, const Dimensions& dim, int64_t begin, int64_t end) {
+void dedup_validate(Buckets<Raw>& raw, Buckets<Event>& events) {
     #pragma omp parallel
     {
-        Dict<uint32_t> cache;
         std::array<std::vector<Event>,PARTS> local;
         #pragma omp for schedule(dynamic)
         for (unsigned j=0; j<PARTS; ++j) {
@@ -228,28 +248,14 @@ void dedup_validate(Buckets<Raw>& raw, Buckets<Event>& events, People& people, c
             size_t capacity = 16; while (capacity < rows.size()*10/7+1) capacity *= 2;
             std::vector<uint32_t> table(capacity, NONE);
             for (uint32_t i=0; i<rows.size(); ++i) {
-                SV id = event_id(rows[i].line);
+                SV id = rows[i].key();
                 size_t slot = (Hash{}(id) >> 8) & (capacity-1);
-                while (table[slot] != NONE && event_id(rows[table[slot]].line) != id) slot = (slot+1) & (capacity-1);
+                while (table[slot] != NONE && rows[table[slot]].key() != id) slot = (slot+1) & (capacity-1);
                 if (table[slot] == NONE || rows[i].ingest < rows[table[slot]].ingest) table[slot] = i;
             }
-            // Traverse winners in input order. Hash-slot order would turn a
-            // sequential CSV validation pass into millions of random page reads.
-            std::vector<uint8_t> kept(rows.size(), 0);
-            for (uint32_t i : table) if (i != NONE) kept[i]=1;
-            std::vector<uint32_t>().swap(table);
-            for (uint32_t i=0; i<rows.size(); ++i) if (kept[i]) {
-                std::array<SV,7> f; csv(rows[i].line, f);
-                int64_t ts;
-                if (f[1].empty() || f[5].empty() || !timestamp(f[2],ts) || ts < begin || ts >= end) continue;
-                if (f[4] != "view" && f[4] != "cart" && f[4] != "purchase") continue;
-                uint64_t price=0;
-                if (f[4] == "purchase" && (!digits(f[6],10000000,price) || !price)) continue;
-                if (rows[i].ingest > ts + DAY) continue;
-                uint32_t cat=0;
-                if (price) { auto p=dim.product.find(f[5]); if (p!=dim.product.end()) cat=p->second; }
-                uint32_t person=people.resolve(f[1], cache);
-                local[person_bucket(person)].push_back({ts,person,uint32_t(price),cat});
+            for (uint32_t i : table) if (i!=NONE && rows[i].person!=NONE) {
+                const auto& row=rows[i];
+                local[person_bucket(row.person)].push_back({row.ts,row.person,row.price,row.category});
             }
             std::vector<Raw>().swap(rows);
             flush(local, events);
@@ -260,7 +266,7 @@ void read_clicks(const std::vector<SV>& files, Buckets<Click>& clicks, People& p
     auto work=chunks(files);
     #pragma omp parallel
     {
-        Dict<uint32_t> cache;
+        ResolveCache cache;
         std::array<std::vector<Click>,PARTS> local;
         #pragma omp for schedule(dynamic)
         for (size_t j=0; j<work.size(); ++j) {
@@ -413,8 +419,8 @@ int main() {
         people.seal(); timing("dimensions + links");
         auto eventfiles=inputs.csvs(data/"events"), clickfiles=inputs.csvs(data/"clicks");
         auto raw=std::make_unique<Buckets<Raw>>(); auto events=std::make_unique<Buckets<Event>>(); auto clicks=std::make_unique<Buckets<Click>>();
-        read_events(eventfiles,*raw); timing("CSV + event partition");
-        dedup_validate(*raw,*events,people,dim,begin,end); raw.reset(); timing("dedup + event validation");
+        read_events(eventfiles,*raw,people,dim,begin,end); timing("CSV + validation + event partition");
+        dedup_validate(*raw,*events); raw.reset(); timing("dedup + compact events");
         read_clicks(clickfiles,*clicks,people,dim,begin,end); timing("clicks");
         std::vector<Results> results(ncpu);
         aggregate(*events,*clicks,dim,results); timing("sessions + attribution + assists");

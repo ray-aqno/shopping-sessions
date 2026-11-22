@@ -4,6 +4,7 @@ RUN pip install --no-cache-dir pyarrow==21.0.0
 WORKDIR /src
 COPY CMakeLists.txt ./
 COPY src ./src
+COPY tests/csv_check.cpp ./tests/csv_check.cpp
 RUN cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DCMAKE_INSTALL_PREFIX=/opt/app && cmake --build build -j8 && cmake --install build && mkdir /opt/arrow && cp /usr/local/lib/python3.12/site-packages/pyarrow/libarrow.so.2100 /usr/local/lib/python3.12/site-packages/pyarrow/libparquet.so.2100 /opt/arrow/
 FROM --platform=linux/amd64 debian:bookworm-slim
 RUN apt-get update && apt-get install -y --no-install-recommends libgomp1 libstdc++6 && rm -rf /var/lib/apt/lists/*

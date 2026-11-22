@@ -7,13 +7,17 @@ ANSWER ?= dev-answer
 IMAGE ?= shopping-sessions:latest
 export NCPU ?= 8
 
-.PHONY: build fixtures fixtures-container generator dev run-dev run-dev-container check-dev differential image
+.PHONY: build parser-check fixtures fixtures-container generator dev run-dev run-dev-container check-dev differential image
 build:
 	cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DPython3_EXECUTABLE=$(abspath $(PYTHON))
 	cmake --build build -j8
 
 fixtures: build
 	$(PYTHON) scripts/run_fixtures.py tests/fixtures -- $(BINARY)
+
+parser-check: build
+	cmake --build build --target csv-check -j8
+	build/csv-check
 
 fixtures-container: image
 	IMAGE=$(IMAGE) $(PYTHON) scripts/run_fixtures.py tests/fixtures -- scripts/docker_run.sh

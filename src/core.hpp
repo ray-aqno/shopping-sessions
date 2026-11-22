@@ -5,6 +5,9 @@
 #include <cstring>
 #include <limits>
 #include <string_view>
+#if defined(__x86_64__)
+#include <immintrin.h>
+#endif
 
 namespace shop {
 using SV = std::string_view;
@@ -30,7 +33,7 @@ struct Hash {
     }
 };
 
-template<size_t N> bool csv(SV line, std::array<SV, N>& fields) {
+template<size_t N> bool csv_scalar(SV line, std::array<SV, N>& fields) {
     size_t offset = 0;
     for (size_t i = 0; i < N; ++i) {
         size_t end = line.find(',', offset);
@@ -48,6 +51,62 @@ template<size_t N> bool csv(SV line, std::array<SV, N>& fields) {
         offset = end + 1;
     }
     return true;
+}
+
+#if defined(__x86_64__)
+template<size_t N> __attribute__((target("avx2,popcnt")))
+bool csv_avx2(SV line, std::array<SV,N>& fields) {
+    std::array<size_t,N> ends;
+    size_t count=0, quotes=0, offset=0;
+    const __m256i comma=_mm256_set1_epi8(','), quote=_mm256_set1_epi8('"');
+    while (line.size()-offset>=32) {
+        __m256i bytes=_mm256_loadu_si256(reinterpret_cast<const __m256i*>(line.data()+offset));
+        uint32_t separators=uint32_t(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,comma)));
+        quotes+=unsigned(__builtin_popcount(unsigned(_mm256_movemask_epi8(_mm256_cmpeq_epi8(bytes,quote)))));
+        while (separators) {
+            if (count>=N-1) return false;
+            ends[count++]=offset+unsigned(__builtin_ctz(separators));
+            separators&=separators-1;
+        }
+        offset+=32;
+    }
+    for (; offset<line.size(); ++offset) {
+        if (line[offset]==',') {
+            if (count>=N-1) return false;
+            ends[count++]=offset;
+        }
+        quotes+=line[offset]=='"';
+    }
+    if (count!=N-1) return false;
+    ends[N-1]=line.size();
+    size_t start=0, expected_quotes=0;
+    for (size_t i=0; i<N; ++i) {
+        SV field=line.substr(start,ends[i]-start);
+        if (!field.empty() && field.front()=='"') {
+            if (field.size()<2 || field.back()!='"') return false;
+            field.remove_prefix(1); field.remove_suffix(1); expected_quotes+=2;
+        }
+        fields[i]=field; start=ends[i]+1;
+    }
+    // The boundary checks account for all legal quotes. Every extra quote,
+    // inside a quoted field or in an unquoted one, makes the row malformed.
+    return quotes==expected_quotes;
+}
+#endif
+
+inline bool vector_csv_supported() {
+#if defined(__x86_64__)
+    static const bool supported=__builtin_cpu_supports("avx2") && __builtin_cpu_supports("popcnt");
+    return supported;
+#else
+    return false;
+#endif
+}
+template<size_t N> bool csv(SV line, std::array<SV,N>& fields) {
+#if defined(__x86_64__)
+    if (vector_csv_supported()) return csv_avx2(line,fields);
+#endif
+    return csv_scalar(line,fields);
 }
 
 inline bool digits(SV s, uint64_t limit, uint64_t& value) {
