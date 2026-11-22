@@ -1,0 +1,30 @@
+{
+  "dataset": "practice17-v5",
+  "scope": "event CSV files only",
+  "files": 50,
+  "bytes": 1782599239,
+  "cpuset": "0-7",
+  "threads": 8,
+  "page_cache": "warm",
+  "timer_scope": "processing loop only; mmap and chunk planning are excluded",
+  "runs": {
+    "sum": [0.164246, 0.130609, 0.134652],
+    "checksum": [0.245626, 0.204517, 0.203136],
+    "scan": [0.105613, 0.107007, 0.105864],
+    "parse": [0.152944, 0.150373, 0.155871]
+  },
+  "medians_seconds": {
+    "sum": 0.134652,
+    "checksum": 0.204517,
+    "scan": 0.105864,
+    "parse": 0.152944
+  },
+  "counts": {
+    "byte_sum": 114869606286,
+    "checksum": 4765380072424787636,
+    "structurally_valid_rows": 21588714,
+    "valid_timestamps": 21506768,
+    "both_ids_packable": 16661359
+  },
+  "warning": "Diagnostic-only workload; not equivalent to full pipeline or official scoring."
+}
