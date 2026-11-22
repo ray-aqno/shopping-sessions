@@ -44,14 +44,16 @@ inline size_t integer_hash(uint64_t key) {
     return key^(key>>31);
 }
 
-template<class Sequence> void radix_sort64(Sequence& rows) {
+// `scratch` is caller-owned so repeated sorts reuse one allocation; the two may
+// trade storage.
+template<class Sequence> void radix_sort64(Sequence& rows,Sequence& scratch) {
     using T=typename Sequence::value_type;
     if (rows.size()<2) return;
     if (rows.size()<256 || rows.size()>UINT32_MAX) {
         std::stable_sort(rows.begin(),rows.end(),[](const T& a,const T& b) { return a.key<b.key; });
         return;
     }
-    Sequence scratch(rows.size());
+    scratch.resize(rows.size());
     std::array<uint32_t,65536> positions;
     uint64_t any=0,all=UINT64_MAX;
     for (const auto& row:rows) { any|=row.key; all&=row.key; }
@@ -65,6 +67,7 @@ template<class Sequence> void radix_sort64(Sequence& rows) {
         rows.swap(scratch);
     }
 }
+template<class Sequence> void radix_sort64(Sequence& rows) { Sequence scratch; radix_sort64(rows,scratch); }
 
 // string_view's comparisons are bytewise (char_traits uses memcmp).
 struct Hash {
@@ -185,6 +188,14 @@ template<size_t N> bool csv(SV line, std::array<SV,N>& fields) {
 
 inline bool digits(SV s, uint64_t limit, uint64_t& value) {
     if (s.empty()) return false;
+    // Eighteen digits cannot overflow 64 bits: validate and accumulate without
+    // branching per character. A non-digit only poisons `bad` (any wrap is moot).
+    if (s.size() <= 18) {
+        uint64_t v = 0; bool bad = false;
+        for (unsigned char c : s) { unsigned d = unsigned(c) - '0'; bad |= d > 9; v = v * 10 + d; }
+        if (bad || v > limit) return false;
+        value = v; return true;
+    }
     value = 0;
     for (unsigned char c : s) {
         if (c < '0' || c > '9') return false;
@@ -244,25 +255,22 @@ inline bool timestamp(SV s, int64_t& out) {
         out = int64_t(value); return true;
     }
     if (s[7] != '-' || s[10] != 'T' || s[13] != ':' || s[16] != ':') return false;
-    auto number = [&](size_t p, size_t n) -> int {
-        int x = 0;
-        for (size_t i = p; i < p + n; ++i) {
-            unsigned c = static_cast<unsigned char>(s[i]);
-            if (c < '0' || c > '9') return -100000;
-            x = x * 10 + int(c - '0');
-        }
-        return x;
-    };
     int64_t day;
     if (!calendar_day(s,day)) return false;
-    int hh = number(11, 2), mm = number(14, 2), ss = number(17, 2);
-    if (hh < 0 || hh > 23 || mm < 0 || mm > 59 || ss < 0 || ss > 59) return false;
+    bool bad = false;
+    auto two = [&](size_t p) {
+        unsigned a = unsigned(static_cast<unsigned char>(s[p])) - '0', b = unsigned(static_cast<unsigned char>(s[p + 1])) - '0';
+        bad |= (a > 9) | (b > 9);
+        return int(a * 10 + b);
+    };
+    int hh = two(11), mm = two(14), ss = two(17);
+    if (bad || hh > 23 || mm > 59 || ss > 59) return false;
     int zone = 0;
     if (s.size() == 20) { if (s[19] != 'Z') return false; }
     else {
         if ((s[19] != '+' && s[19] != '-') || s[22] != ':') return false;
-        int zh = number(20, 2), zm = number(23, 2);
-        if (zh < 0 || zh > 23 || zm < 0 || zm > 59) return false;
+        int zh = two(20), zm = two(23);
+        if (bad || zh > 23 || zm > 59) return false;
         zone = (zh * 60 + zm) * (s[19] == '+' ? 1 : -1);
     }
     out = day + (hh * 3600LL + mm * 60 + ss - zone * 60) * 1000;

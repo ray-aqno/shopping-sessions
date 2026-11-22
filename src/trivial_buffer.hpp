@@ -53,6 +53,17 @@ public:
         if (count) std::memcpy(data_+size_,source,count*sizeof(T));
         size_+=count;
     }
+    // Makes room for `count` more elements and returns where they go.
+    T* extend(size_t count) {
+        reserve(size_+count);
+        T* at=data_+size_; size_+=count; return at;
+    }
+    void push_back(const T& value) {
+        if (size_==capacity_) reserve(size_+1);
+        data_[size_++]=value;
+    }
+    void resize(size_t n) { reserve(n); size_=n; }
+    void clear() noexcept { size_=0; }
     void swap(TrivialBuffer& other) noexcept {
         std::swap(data_,other.data_); std::swap(size_,other.size_); std::swap(capacity_,other.capacity_);
     }
